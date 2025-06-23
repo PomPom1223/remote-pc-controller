@@ -43,16 +43,20 @@
 
         <div class="flex items-center justify-center mb-6">
             <div id="status-indicator" class="w-4 h-4 rounded-full bg-gray-400 mr-3"></div>
-            <span id="status-text" class="text-gray-600 dark:text-gray-300 font-medium">Unknown</span>
+            <span id="status-text" class="text-gray-600 dark:text-gray-300 font-medium">Loading...</span>
         </div>
         
         <div id="connection-form" class="mb-6">
-            <h2 class="text-xl font-semibold text-gray-700 dark:text-white mb-4">MQTT Broker Settings</h2>
-            <div class="space-y-4">
-                <input type="text" id="broker-url" placeholder="wss://your_broker_url" class="w-full px-4 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 dark:text-gray-200" value="">
-                <input type="text" id="topic" placeholder="Enter a long, secret topic" class="w-full px-4 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 dark:text-gray-200" value="">
+            <div class="flex justify-between items-center mb-4">
+                 <h2 class="text-xl font-semibold text-gray-700 dark:text-white">MQTT Settings</h2>
+                 <span id="details-status" class="text-sm font-medium px-2 py-1 rounded"></span>
             </div>
-            <button id="connect-btn" class="mt-4 w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg btn">Connect</button>
+            <div class="space-y-4">
+                <input type="text" id="broker-url" placeholder="wss://your_broker_url" class="w-full px-4 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 dark:text-gray-200">
+                <input type="text" id="topic" placeholder="Enter a long, secret topic" class="w-full px-4 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 dark:text-gray-200">
+            </div>
+            <button id="connect-btn" class="mt-4 w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg btn">Save and Connect</button>
+            <button id="clear-settings-btn" class="mt-2 w-full bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg btn">Clear Saved Settings</button>
         </div>
 
 
@@ -84,7 +88,7 @@
                 date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
                 expires = "; expires=" + date.toUTCString();
             }
-            document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
+            document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax; Secure";
         }
 
         function getCookie(name) {
@@ -97,14 +101,20 @@
             }
             return null;
         }
+        
+        function eraseCookie(name) {   
+            document.cookie = name+'=; Max-Age=-99999999; path=/;';  
+        }
 
         // --- Page Elements ---
         const connectBtn = document.getElementById('connect-btn');
         const disconnectBtn = document.getElementById('disconnect-btn');
+        const clearSettingsBtn = document.getElementById('clear-settings-btn');
         const turnOnBtn = document.getElementById('turn-on-btn');
         const turnOffBtn = document.getElementById('turn-off-btn');
         const statusIndicator = document.getElementById('status-indicator');
         const statusText = document.getElementById('status-text');
+        const detailsStatus = document.getElementById('details-status');
         const brokerUrlInput = document.getElementById('broker-url');
         const topicInput = document.getElementById('topic');
         const connectionForm = document.getElementById('connection-form');
@@ -115,23 +125,24 @@
         let controlTopic = '';
         let statusTopic = '';
 
-        // --- Load settings from cookies on page load ---
-        window.addEventListener('DOMContentLoaded', (event) => {
+        // --- Page Load Logic ---
+        window.addEventListener('DOMContentLoaded', () => {
             const savedBroker = getCookie('brokerUrl');
             const savedTopic = getCookie('topic');
 
-            if (savedBroker) {
+            if (savedBroker && savedTopic) {
                 brokerUrlInput.value = savedBroker;
-            } else {
-                // Set a default public broker if no cookie is found
-                brokerUrlInput.value = "wss://test.mosquitto.org:8081";
-            }
-            
-            if (savedTopic) {
                 topicInput.value = savedTopic;
+                detailsStatus.textContent = 'Details Saved';
+                detailsStatus.classList.add('bg-green-100', 'text-green-800');
+                // Automatically connect with saved details
+                connectToBroker();
+            } else {
+                detailsStatus.textContent = 'Not Saved';
+                detailsStatus.classList.add('bg-gray-200', 'text-gray-800');
+                brokerUrlInput.value = "wss://test.mosquitto.org:8081";
+                setStatus('Disconnected', '#6b7280');
             }
-
-            setStatus('Disconnected', '#6b7280');
         });
         
         function showMessage(message, isError = false) {
@@ -147,21 +158,37 @@
             statusIndicator.style.backgroundColor = color;
             statusText.textContent = status;
         }
+        
+        function showUiForConnected(isConnected) {
+            if(isConnected) {
+                connectionForm.classList.add('hidden');
+                controls.classList.remove('hidden');
+            } else {
+                controls.classList.add('hidden');
+                connectionForm.classList.remove('hidden');
+            }
+        }
 
         function connectToBroker() {
+            // If already connected, do nothing.
+            if(client && client.connected) return;
+
             const brokerUrl = brokerUrlInput.value;
             controlTopic = topicInput.value;
-            statusTopic = `${controlTopic}/status`;
-
+            
             if (!brokerUrl || !controlTopic) {
-                showMessage("Broker URL and Topic are required.", true);
+                showMessage("Broker URL and Topic are required to save.", true);
                 return;
             }
             
-            // --- Save settings to cookies on connect ---
+            // Save settings to cookies
             setCookie('brokerUrl', brokerUrl, 365);
             setCookie('topic', controlTopic, 365);
+            detailsStatus.textContent = 'Details Saved';
+            detailsStatus.className = 'text-sm font-medium px-2 py-1 rounded bg-green-100 text-green-800';
 
+
+            statusTopic = `${controlTopic}/status`;
             setStatus('Connecting...', '#f59e0b'); // amber-500
 
             client = mqtt.connect(brokerUrl);
@@ -169,97 +196,74 @@
             client.on('connect', () => {
                 setStatus('Connected', '#22c55e'); // green-500
                 showMessage("Successfully connected to MQTT broker!");
-                connectionForm.classList.add('hidden');
-                controls.classList.remove('hidden');
+                showUiForConnected(true);
 
                 client.subscribe(statusTopic, (err) => {
-                    if (err) {
-                        showMessage('Failed to subscribe to status topic.', true);
-                        console.error('Subscribe error:', err);
-                    }
+                    if (err) showMessage('Failed to subscribe to status topic.', true);
                 });
             });
 
             client.on('message', (topic, message) => {
                 if (topic === statusTopic) {
                     const status = message.toString();
-                    if(status === 'ONLINE') {
-                         setStatus('PC is Online', '#22c55e');
-                    } else if (status === 'OFFLINE') {
-                        setStatus('PC is Offline', '#ef4444');
-                    } else if (status === 'SHUTTING_DOWN') {
-                        setStatus('PC is Shutting Down...', '#f59e0b');
-                    }
+                    if(status === 'ONLINE') setStatus('PC is Online', '#22c55e');
+                    else if (status === 'OFFLINE') setStatus('PC is Offline', '#ef4444');
+                    else if (status === 'SHUTTING_DOWN') setStatus('PC is Shutting Down...', '#f59e0b');
                 }
             });
 
             client.on('error', (err) => {
-                setStatus('Error', '#ef4444'); // red-500
-                showMessage('Connection error. Check console for details.', true);
-                console.error('Connection error:', err);
-                disconnectFromBroker();
+                setStatus('Error', '#ef4444');
+                showMessage('Connection error. Check console.', true);
+                disconnectFromBroker(false); // Don't show redundant 'disconnected' message
             });
 
             client.on('close', () => {
-                if(statusText.textContent !== 'Disconnected'){
-                    setStatus('Disconnected', '#6b7280'); // gray-500
+                if (statusText.textContent !== 'Disconnected') {
+                    setStatus('Disconnected', '#6b7280');
                     showMessage('Disconnected from broker.', true);
-                    controls.classList.add('hidden');
-                    connectionForm.classList.remove('hidden');
+                    showUiForConnected(false);
                 }
             });
         }
         
-        function disconnectFromBroker() {
+        function disconnectFromBroker(showMessageAlert = true) {
              if (client) {
                 client.end();
                 client = null;
-                setStatus('Disconnected', '#6b7280');
-                showMessage("Disconnected from broker.");
-                controls.classList.add('hidden');
-                connectionForm.classList.remove('hidden');
             }
+            setStatus('Disconnected', '#6b7280');
+            if(showMessageAlert) showMessage("Disconnected from broker.");
+            showUiForConnected(false);
         }
 
 
         turnOnBtn.addEventListener('click', () => {
-            if (client && client.connected) {
-                client.publish(controlTopic, 'ON', (err) => {
-                     if (err) {
-                        showMessage('Failed to send ON command.', true);
-                        console.error('Publish error:', err);
-                    } else {
-                        showMessage('ON command sent!');
-                    }
-                });
-            } else {
-                 showMessage('Not connected to MQTT broker.', true);
-            }
+            if (client && client.connected) client.publish(controlTopic, 'ON', (err) => {
+                if (err) showMessage('Failed to send ON command.', true);
+                else showMessage('ON command sent!');
+            });
+            else showMessage('Not connected to MQTT broker.', true);
         });
 
         turnOffBtn.addEventListener('click', () => {
-            if (client && client.connected) {
-                client.publish(controlTopic, 'OFF', (err) => {
-                     if (err) {
-                        showMessage('Failed to send OFF command.', true);
-                        console.error('Publish error:', err);
-                    } else {
-                        showMessage('OFF command sent!');
-                    }
-                });
-            } else {
-                 showMessage('Not connected to MQTT broker.', true);
-            }
+            if (client && client.connected) client.publish(controlTopic, 'OFF', (err) => {
+                if (err) showMessage('Failed to send OFF command.', true);
+                else showMessage('OFF command sent!');
+            });
+            else showMessage('Not connected to MQTT broker.', true);
         });
 
         connectBtn.addEventListener('click', connectToBroker);
-        disconnectBtn.addEventListener('click', disconnectFromBroker);
+        disconnectBtn.addEventListener('click', () => disconnectFromBroker(true));
+        
+        clearSettingsBtn.addEventListener('click', () => {
+            eraseCookie('brokerUrl');
+            eraseCookie('topic');
+            showMessage('Saved settings cleared. Reloading...');
+            setTimeout(() => window.location.reload(), 1500);
+        });
 
     </script>
 </body>
 </html>
-```
-
-After you've updated the file on GitHub and the changes are live on your Netlify URL, you'll notice that your connection details will be saved automatically.
-
-Now that the webpage is complete and robust, are you ready to get started on the **ESP8266 code
